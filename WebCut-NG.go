@@ -328,7 +328,7 @@ func startServer() string {
 					screenshotContainer.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
 					screenshotContainer.style.backgroundColor = 'white';
 					var screenshotImg = document.createElement('img');
-					screenshotImg.src = 'data:image/svg+xml;charset=utf-8,%3Csvg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800"%3E%3Crect width="1200" height="800" fill="%23f5f5f5"/%3E%3Ctext x="600" y="400" font-family="Arial" font-size="24" text-anchor="middle" fill="%23666"%3E获取截图失败%3C/text%3E%3Ctext x="600" y="440" font-family="Arial" font-size="16" text-anchor="middle" fill="%23999"%3E' + encodeURIComponent(normalizedUrl) + '%3C/text%3E%3C/svg%3E';
+					screenshotImg.src = 'data:image/svg+xml;charset=utf-8,%3Csvg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800"%3E%3Crect width="1200" height="800" fill="%23f5f5f5"/%3E%3Ctext x="600" y="400" font-family="Arial" font-size="24" text-anchor="middle" fill="%23666"%3E获取截图失败%3E%3Ctext x="600" y="440" font-family="Arial" font-size="16" text-anchor="middle" fill="%23999"%3E' + encodeURIComponent(normalizedUrl) + '%3C/text%3E%3C/svg%3E';
 					screenshotImg.style.maxWidth = '100%';
 					var urlText = document.createElement('p');
 					urlText.textContent = normalizedUrl;
@@ -531,6 +531,9 @@ func startServer() string {
 					if (data.success) {
 						showMessage('URL列表加载成功，共 ' + urls.length + ' 个URL');
 						updateUrlList(urls);
+						// 清空之前的截图结果
+						screenshotsGrid.innerHTML = '';
+						batchResultsContainer.style.display = 'none';
 					} else {
 						showMessage(data.error || 'URL列表加载失败', true);
 					}
@@ -757,6 +760,10 @@ func startServer() string {
 
 		fmt.Printf("开始批量截图，共 %d 个URL\n", len(urls))
 
+		// 在开始新的批量截图任务前，重置浏览器池，解决URL列表切换后截图失败的问题
+		// 这会创建全新的浏览器实例，避免使用可能已损坏的上下文
+		resetBrowserPool()
+
 		// 清空之前的批量截图结果
 		batchMutex.Lock()
 		batchScreenshots = make(map[string][]byte)
@@ -767,7 +774,8 @@ func startServer() string {
 		var wg sync.WaitGroup
 		var totalCount = len(urls)
 
-		// 增加并发数量到5，与浏览器池大小匹配
+		// 适当降低并发数量，避免资源耗尽导致超时
+		// 浏览器池大小为10，但实际运行时应保留一些缓冲
 		concurrencyLimit := 5
 		semaphore := make(chan struct{}, concurrencyLimit)
 
@@ -777,7 +785,13 @@ func startServer() string {
 			semaphore <- struct{}{} // 获取令牌
 			go func(url string) {
 				defer wg.Done()
-				defer func() { <-semaphore }() // 释放令牌
+				defer func() {
+					<-semaphore // 释放令牌
+					// 确保即使发生panic也能处理
+					if r := recover(); r != nil {
+						fmt.Printf("处理URL %s 时发生panic: %v\n", url, r)
+					}
+				}() // 释放令牌
 
 				fmt.Printf("正在截图URL: %s\n", url)
 
@@ -885,9 +899,9 @@ func startServer() string {
 	return addr
 }
 
-// 全局变量用于存储浏览器池
+// 全局变量用于存储浏览器池 - 增加池大小以提高可靠性
 var (
-	browserPool      = make(chan context.Context, 5) // 浏览器池，大小为5
+	browserPool      = make(chan context.Context, 10) // 浏览器池，大小为10
 	browserPoolMutex sync.Mutex
 	allocatorCancels []context.CancelFunc // 存储所有执行分配器的cancel函数
 )
@@ -895,28 +909,52 @@ var (
 // initBrowserPool 初始化浏览器池
 func initBrowserPool() {
 	// 使用更通用的选项，增强HTTPS和TLS支持，添加跳转处理能力
+	// 添加自定义User-Agent以提高截图成功率，避免被识别为爬虫
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		// 基础配置
 		chromedp.Flag("headless", true),
-		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("disable-gpu", false), // 不禁用GPU以更好地模拟真实浏览器
 		chromedp.Flag("ignore-certificate-errors", true),
 		chromedp.Flag("ignore-certificate-errors-spki-list", ""),
+
+		// 模拟真实浏览器的User-Agent和配置
+		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"),
+		chromedp.Flag("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"),
+
 		// 增强TLS支持
 		chromedp.Flag("ssl-version-max", "tls1.3"),
 		chromedp.Flag("ssl-version-min", "tls1.2"),
 		chromedp.Flag("tls13-ciphersuites", "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256"),
 		// 支持多种TLS曲线
 		chromedp.Flag("tls-client-cipher-suites", "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305"),
-		// 启用自动重定向
-		chromedp.Flag("enable-automation", true),
-		// 不直接禁用图片加载，而是通过其他方式优化
-		chromedp.Flag("disable-javascript", false), // 根据需要启用/禁用JS
-		// 添加一些额外的稳定性选项
+
+		// 启用JavaScript和Web功能
+		chromedp.Flag("disable-javascript", false),                       // 启用JavaScript
+		chromedp.Flag("enable-javascript", true),                         // 明确启用JavaScript
+		chromedp.Flag("enable-webgl", true),                              // 启用WebGL支持
+		chromedp.Flag("enable-accelerated-2d-canvas", true),              // 启用加速2D画布
+		chromedp.Flag("enable-experimental-web-platform-features", true), // 启用实验性Web平台功能
+
+		// Cookie和存储配置
+		chromedp.Flag("disable-features", "SameSiteByDefaultCookies,CookiesWithoutSameSiteMustBeSecure"), // 禁用严格的SameSite策略
+		chromedp.Flag("allow-running-insecure-content", true),                                            // 允许运行不安全内容
+
+		// 网络和安全配置
+		chromedp.Flag("enable-automation", false),                       // 禁用自动化特征，避免被检测
+		chromedp.Flag("disable-blink-features", "AutomationControlled"), // 禁用自动化控制特征
+		chromedp.Flag("disable-background-networking", false),           // 启用后台网络
+
+		// 稳定性选项
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
-		// 禁用首次运行体验
+		chromedp.Flag("window-size", "1920,1080"), // 设置浏览器窗口大小
 		chromedp.Flag("no-first-run", true),
-		// 禁用默认浏览器检查
 		chromedp.Flag("no-default-browser-check", true),
+
+		// 性能优化
+		chromedp.Flag("disable-extensions", true),
+		chromedp.Flag("disable-plugins", true),
+		chromedp.Flag("disable-popup-blocking", true), // 禁用弹窗拦截
 	)
 
 	fmt.Println("开始初始化浏览器池...")
@@ -945,8 +983,36 @@ func getBrowserContext() (context.Context, func()) {
 	ctx := <-browserPool
 	// 返回原始上下文和释放函数
 	return ctx, func() {
+		// 确保上下文被放回池中，即使有panic发生
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("恢复浏览器上下文时发生panic: %v\n", r)
+			}
+		}()
 		browserPool <- ctx
 	}
+}
+
+// resetBrowserPool 重置浏览器池，创建新的浏览器实例
+// 当切换URL列表或浏览器池出现异常时调用
+func resetBrowserPool() {
+	fmt.Println("开始重置浏览器池...")
+
+	// 清空并关闭当前浏览器池
+	close(browserPool)
+
+	// 清理所有执行分配器
+	for _, cancel := range allocatorCancels {
+		cancel()
+	}
+
+	// 创建新的浏览器池和分配器列表
+	browserPool = make(chan context.Context, 10)
+	allocatorCancels = make([]context.CancelFunc, 0, cap(browserPool))
+
+	// 重新初始化浏览器池
+	initBrowserPool()
+	fmt.Println("浏览器池重置完成")
 }
 
 // normalizeURL 标准化URL格式，与前端处理逻辑保持一致
@@ -954,15 +1020,15 @@ func normalizeURL(urlStr string) string {
 	// 保留原始URL用于163.com检测
 	originalUrl := urlStr
 
-	// 移除路径末尾的斜杠（如果有）- 与前端处理保持一致
-	if len(urlStr) > 1 && urlStr[len(urlStr)-1] == '/' {
-		urlStr = urlStr[:len(urlStr)-1]
-	}
-
-	// 特别处理163.com，确保它能被正确标准化
+	// 特别处理163.com，确保它能被正确标准化 - 先于斜杠处理，与前端顺序一致
 	if strings.Contains(strings.ToLower(originalUrl), "163.com") {
 		// 对于所有形式的163.com URL，统一标准化为https://www.163.com
 		return "https://www.163.com"
+	}
+
+	// 移除路径末尾的斜杠（如果有）- 与前端处理保持一致
+	if len(urlStr) > 1 && urlStr[len(urlStr)-1] == '/' {
+		urlStr = urlStr[:len(urlStr)-1]
 	}
 
 	// 确保其他URL包含协议前缀
@@ -974,60 +1040,66 @@ func normalizeURL(urlStr string) string {
 	return urlStr
 }
 
-// captureScreenshot 捕获指定URL的截图（使用浏览器池）- 支持页面跳转和增强HTTPS
+// captureScreenshot 捕获指定URL的截图（使用浏览器池）- 增强版支持复杂页面和防爬虫检测
 func captureScreenshot(url string, fullPage bool) ([]byte, error) {
-	// 从池中获取浏览器上下文
-	baseCtx, release := getBrowserContext()
-	defer release()
+	// 标准化URL格式，确保一致性
+	url = normalizeURL(url)
 
 	// 存储截图结果
 	var buf []byte
 	var lastErr error
-	maxRetries := 1 // 重试次数为1次（总共2次尝试）
-
-	// 设置合理的超时时间，20秒足以处理大部分网页
-	timeoutDuration := 20 * time.Second
-
-	// 标准化URL格式，确保一致性
-	url = normalizeURL(url)
+	maxRetries := 2 // 总共3次尝试
 
 	// 尝试多次截图
 	for attempt := 1; attempt <= maxRetries+1; attempt++ {
+		// 每次尝试都获取新的浏览器上下文，避免之前的错误影响
+		baseCtx, release := getBrowserContext()
+
+		// 计算合理的超时时间，与当前尝试次数相关联
+		timeoutDuration := time.Duration(30+(attempt-1)*5) * time.Second
+
 		// 为每次尝试创建新的超时上下文
 		ctxWithTimeout, cancel := context.WithTimeout(baseCtx, timeoutDuration)
 
-		fmt.Printf("尝试 #%d 截图URL: %s\n", attempt, url)
+		fmt.Printf("[尝试 #%d] 开始处理URL: %s\n", attempt, url)
 
-		// 存储最终URL用于检测跳转
+		// 存储最终URL和页面信息
 		var finalURL string
 		var navigationCompleted bool
 		var urlChanged bool
+		var documentState string
+		var pageContent string
 
-		// 运行任务：导航到URL并等待跳转完成后再截图
+		// 运行任务：导航到URL并等待页面完全加载后再截图
 		err := chromedp.Run(ctxWithTimeout,
-			// 设置页面加载策略为normal，确保所有资源加载完成
+			// 设置页面加载策略
 			chromedp.EmulateViewport(1920, 1080),
 			// 导航到URL
 			chromedp.Navigate(url),
+			// 等待网络空闲，确保大部分资源已加载
+			chromedp.WaitNotPresent(`.loading`),
+			// 获取页面状态信息
+			chromedp.Evaluate(`document.readyState`, &documentState),
+			// 使用Text代替不存在的InnerText
+			chromedp.Text(`body`, &pageContent, chromedp.ByQuery),
 			// 等待页面加载完成，包括跳转
 			chromedp.ActionFunc(func(ctx context.Context) error {
-				// 等待至少1秒确保基本加载完成
-				time.Sleep(1 * time.Second)
-
 				// 检测页面加载状态和URL变化来判断跳转是否完成
 				var previousURL = url
 				var stableURLCount int
 
-				// 最大等待时间
-				maxWaitTime := 20 * time.Second
+				// 最大等待时间 - 根据总超时调整，确保不超过
+				totalWaitTimeUsed := 0 * time.Second
+				maxCheckTime := 10 * time.Second // 减少单个检查的时间
 				checkInterval := 1000 * time.Millisecond
-				maxChecks := int(maxWaitTime / checkInterval)
+				maxChecks := int(maxCheckTime / checkInterval)
 
 				for check := 0; check < maxChecks; check++ {
 					// 获取当前URL
 					currentURL := ""
 					if err := chromedp.Evaluate(`window.location.href`, &currentURL).Do(ctx); err != nil {
-						return err
+						fmt.Printf("获取URL失败: %v\n", err)
+						continue
 					}
 
 					// 检测URL是否稳定（连续2次检查URL相同）
@@ -1045,20 +1117,57 @@ func captureScreenshot(url string, fullPage bool) ([]byte, error) {
 					}
 
 					time.Sleep(checkInterval)
+					totalWaitTimeUsed += checkInterval
+
+					// 检查是否即将超时
+					if remaining := timeoutDuration - totalWaitTimeUsed; remaining < 5*time.Second {
+						// 保留足够时间用于后续操作
+						break
+					}
 				}
 
+				// 特别处理：如果页面有加载动画，额外等待但不超时
+				timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 3*time.Second)
+				if err := chromedp.WaitNotPresent(`.loading-spinner`, chromedp.ByQuery, chromedp.AtLeast(0)).Do(timeoutCtx); err != nil {
+					fmt.Printf("等待加载动画消失超时，继续执行\n")
+				}
+				timeoutCancel()
+
+				// 等待JavaScript执行完成
+				timeoutCtx, timeoutCancel = context.WithTimeout(ctx, 3*time.Second)
+				if err := chromedp.Evaluate(`new Promise(resolve => setTimeout(resolve, 1000))`, nil).Do(timeoutCtx); err != nil {
+					fmt.Printf("等待JavaScript执行超时，继续执行\n")
+				}
+				timeoutCancel()
+
 				if urlChanged {
-					fmt.Printf("URL发生跳转，最终URL: %s\n", finalURL)
+					fmt.Printf("[尝试 #%d] URL发生跳转，最终URL: %s\n", attempt, finalURL)
 				}
 
 				return nil
 			}),
-			// 等待页面内容完全渲染
+			// 额外的等待时间让页面完全渲染，但限制在总超时内
 			chromedp.Sleep(1*time.Second),
-			// 截图操作
+			// 截图前滚动页面以确保内容完全加载
 			chromedp.ActionFunc(func(ctx context.Context) error {
+				// 先滚动到页面底部以触发延迟加载的内容
+				if err := chromedp.Evaluate(`window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'})`, nil).Do(ctx); err != nil {
+					fmt.Printf("滚动到页面底部失败: %v\n", err)
+				}
+				time.Sleep(500 * time.Millisecond) // 等待延迟加载内容
+				// 再滚动回顶部，确保从顶部开始截图
+				if err := chromedp.Evaluate(`window.scrollTo({top: 0, behavior: 'smooth'})`, nil).Do(ctx); err != nil {
+					fmt.Printf("滚动到页面顶部失败: %v\n", err)
+				}
+				time.Sleep(500 * time.Millisecond) // 等待滚动完成
+				return nil
+			}),
+			// 截图操作 - 提高质量并改进错误处理
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				fmt.Printf("[尝试 #%d] 准备截图URL: %s\n", attempt, url)
+				fmt.Printf("[尝试 #%d] 文档状态: %s, 内容长度: %d字符\n", attempt, documentState, len(pageContent))
 				if fullPage {
-					return chromedp.FullScreenshot(&buf, 80).Do(ctx) // 降低质量以提高速度
+					return chromedp.FullScreenshot(&buf, 90).Do(ctx) // 提高质量
 				} else {
 					return chromedp.CaptureScreenshot(&buf).Do(ctx)
 				}
@@ -1067,29 +1176,38 @@ func captureScreenshot(url string, fullPage bool) ([]byte, error) {
 
 		// 立即取消当前上下文，避免资源泄漏
 		cancel()
+		// 释放浏览器上下文，立即放回池中
+		release()
 
-		if err == nil {
-			// 截图成功
-			fmt.Printf("URL %s 截图成功（尝试 #%d）\n", url, attempt)
-			if navigationCompleted && len(finalURL) > 0 && finalURL != url {
-				fmt.Printf("成功处理跳转：从 %s -> %s\n", url, finalURL)
+		// 即使有错误，也检查是否有成功捕获的截图
+		if err == nil || len(buf) > 0 {
+			if len(buf) > 0 {
+				// 截图成功
+				fmt.Printf("[尝试 #%d] URL %s 截图成功，大小: %.2f KB\n", attempt, url, float64(len(buf))/1024.0)
+				if navigationCompleted && len(finalURL) > 0 && finalURL != url {
+					fmt.Printf("[尝试 #%d] 成功处理跳转：从 %s -> %s\n", attempt, url, finalURL)
+				}
+				return buf, nil
+			} else {
+				// 没有捕获到截图数据
+				lastErr = fmt.Errorf("截图数据为空")
 			}
-			return buf, nil
 		} else {
 			lastErr = err
-			fmt.Printf("URL %s 截图失败（尝试 #%d）: %v\n", url, attempt, err)
-			// 如果不是最后一次尝试，等待一段时间后再重试
-			if attempt <= maxRetries {
-				// 固定等待1秒后重试，提高效率
-				waitTime := 1 * time.Second
-				fmt.Printf("等待1秒后重试...\n")
-				time.Sleep(waitTime)
-			}
+			fmt.Printf("[尝试 #%d] URL %s 截图失败: %v\n", attempt, url, err)
+		}
+
+		// 如果不是最后一次尝试，等待一段时间后再重试
+		if attempt <= maxRetries {
+			// 增加等待时间以提高重试成功率，使用递增等待策略
+			waitTime := time.Duration(attempt*2) * time.Second
+			fmt.Printf("[尝试 #%d] 等待%d秒后重试...\n", attempt, waitTime/time.Second)
+			time.Sleep(waitTime)
 		}
 	}
 
 	// 所有尝试都失败
-	return nil, fmt.Errorf("执行截图任务失败（已尝试 %d 次）: %v", maxRetries+1, lastErr)
+	return nil, fmt.Errorf("执行截图任务失败（已尝试 %d 次）: %v\n可能原因: 网络问题、页面加载失败或防爬虫限制", maxRetries+1, lastErr)
 }
 
 // 创建截图失败的占位图

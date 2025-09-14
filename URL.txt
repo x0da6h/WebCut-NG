@@ -1,3 +1,10 @@
 https://fpgaol.ustc.edu.cn/accounts/login/?next=/fpga/usage/
 https://jybkjgl.moe.edu.cn/kjgl-sso/login
 https://sso.szcu.edu.cn/cas/login?service=http%3A%2F%2Fsso.szcu.edu.cn%2Flogin
+https://iam.gufe.edu.cn/am/UI/Login
+https://sts.master.bisu.edu.cn/index/user/login.html
+https://sts.application.bisu.edu.cn/index/user/login.html
+https://onlineapplication.jxufe.edu.cn/
+https://secvpn.nottingham.edu.cn:8888/remote/login?lang=GB2312
+https://vpn.vma.edu.cn:8443/login.do;jsessionid=node0144ioqmvkxvp91ogu869kmjyge591117.node0
+https://admission.hbiibe.edu.cn/
