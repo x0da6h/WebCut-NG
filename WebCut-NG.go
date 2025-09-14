@@ -53,18 +53,19 @@ type PageData struct {
 	ServerAddr string
 }
 
+// 启动本地HTTP服务器
 func startServer() string {
 	// 初始化浏览器池
 	initBrowserPool()
 
 	// 创建一个监听器
-	listener, err := net.Listen("tcp", "127.0.0.1:1426")
+	listener, err := net.Listen("tcp", "127.0.0.1:1427")
 	if err != nil {
 		panic(err)
 	}
 
 	// 获取分配的地址和端口
-	addr := "127.0.0.1:1426"
+	addr := "127.0.0.1:1427"
 
 	// 定义HTML模板
 	htmlTemplate := `
@@ -278,7 +279,7 @@ func startServer() string {
 							// 如果没有找到该URL的截图，显示错误信息
 							console.warn('未找到URL的截图:', normalizedUrl);
 							// 可以选择使用一个默认的占位图
-							screenshotImg.src = 'data:image/svg+xml;charset=utf-8,%3Csvg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800"%3E%3Crect width="1200" height="800" fill="%23f5f5f5"/%3E%3Ctext x="600" y="400" font-family="Arial" font-size="24" text-anchor="middle" fill="%23666"%3E截图失败%3C/text%3E%3Ctext x="600" y="440" font-family="Arial" font-size="16" text-anchor="middle" fill="%23999"%3E' + encodeURIComponent(normalizedUrl) + '%3C/text%3E%3C/svg%3E';
+							screenshotImg.src = 'data:image/svg+xml;charset=utf-8,%3Csvg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800"%3E%3Crect width="1200" height="800" fill="%23f5f5f5"/%3E%3Ctext x="600" y="400" font-family="Arial" font-size="24" text-anchor="middle" fill="%23666"%3E截图失败%3E%3C/text%3E%3Ctext x="600" y="440" font-family="Arial" font-size="16" text-anchor="middle" fill="%23999"%3E' + encodeURIComponent(normalizedUrl) + '%3E%3C/text%3E%3C/svg%3E';
 						}
 						screenshotImg.style.maxWidth = '100%';
 						screenshotImg.style.height = 'auto';
@@ -328,7 +329,7 @@ func startServer() string {
 					screenshotContainer.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
 					screenshotContainer.style.backgroundColor = 'white';
 					var screenshotImg = document.createElement('img');
-					screenshotImg.src = 'data:image/svg+xml;charset=utf-8,%3Csvg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800"%3E%3Crect width="1200" height="800" fill="%23f5f5f5"/%3E%3Ctext x="600" y="400" font-family="Arial" font-size="24" text-anchor="middle" fill="%23666"%3E获取截图失败%3E%3Ctext x="600" y="440" font-family="Arial" font-size="16" text-anchor="middle" fill="%23999"%3E' + encodeURIComponent(normalizedUrl) + '%3C/text%3E%3C/svg%3E';
+					screenshotImg.src = 'data:image/svg+xml;charset=utf-8,%3Csvg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800"%3E%3Crect width="1200" height="800" fill="%23f5f5f5"/%3E%3Ctext x="600" y="400" font-family="Arial" font-size="24" text-anchor="middle" fill="%23666"%3E获取截图失败%3E%3Ctext x="600" y="440" font-family="Arial" font-size="16" text-anchor="middle" fill="%23999"%3E' + encodeURIComponent(normalizedUrl) + '%3E%3C/text%3E%3C/svg%3E';
 					screenshotImg.style.maxWidth = '100%';
 					var urlText = document.createElement('p');
 					urlText.textContent = normalizedUrl;
@@ -1048,27 +1049,29 @@ func captureScreenshot(url string, fullPage bool) ([]byte, error) {
 	// 存储截图结果
 	var buf []byte
 	var lastErr error
-	maxRetries := 2 // 总共3次尝试
+	maxRetries := 1 // 总共2次尝试，减少重试次数提高速度
+
+	// 判断是否为需要特殊处理的URL（可能需要更长加载时间）
+	needsSpecialHandling := needsLongerTimeout(url)
 
 	// 尝试多次截图
 	for attempt := 1; attempt <= maxRetries+1; attempt++ {
 		// 每次尝试都获取新的浏览器上下文，避免之前的错误影响
 		baseCtx, release := getBrowserContext()
 
-		// 计算合理的超时时间，与当前尝试次数相关联
-		timeoutDuration := time.Duration(30+(attempt-1)*5) * time.Second
+		// 计算合理的超时时间，与当前尝试次数和URL特性相关联
+		baseTimeout := 15 * time.Second
+		if needsSpecialHandling {
+			baseTimeout = 25 * time.Second // 为特殊URL增加基础超时时间
+		}
+		timeoutDuration := time.Duration(int(baseTimeout.Seconds())+(attempt-1)*5) * time.Second
 
 		// 为每次尝试创建新的超时上下文
 		ctxWithTimeout, cancel := context.WithTimeout(baseCtx, timeoutDuration)
 
-		fmt.Printf("[尝试 #%d] 开始处理URL: %s\n", attempt, url)
-
 		// 存储最终URL和页面信息
 		var finalURL string
 		var navigationCompleted bool
-		var urlChanged bool
-		var documentState string
-		var pageContent string
 
 		// 运行任务：导航到URL并等待页面完全加载后再截图
 		err := chromedp.Run(ctxWithTimeout,
@@ -1078,10 +1081,6 @@ func captureScreenshot(url string, fullPage bool) ([]byte, error) {
 			chromedp.Navigate(url),
 			// 等待网络空闲，确保大部分资源已加载
 			chromedp.WaitNotPresent(`.loading`),
-			// 获取页面状态信息
-			chromedp.Evaluate(`document.readyState`, &documentState),
-			// 使用Text代替不存在的InnerText
-			chromedp.Text(`body`, &pageContent, chromedp.ByQuery),
 			// 等待页面加载完成，包括跳转
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				// 检测页面加载状态和URL变化来判断跳转是否完成
@@ -1089,16 +1088,17 @@ func captureScreenshot(url string, fullPage bool) ([]byte, error) {
 				var stableURLCount int
 
 				// 最大等待时间 - 根据总超时调整，确保不超过
-				totalWaitTimeUsed := 0 * time.Second
-				maxCheckTime := 10 * time.Second // 减少单个检查的时间
-				checkInterval := 1000 * time.Millisecond
+				maxCheckTime := 5 * time.Second
+				if needsSpecialHandling {
+					maxCheckTime = 10 * time.Second // 为特殊URL增加检查时间
+				}
+				checkInterval := 500 * time.Millisecond // 调整检查频率
 				maxChecks := int(maxCheckTime / checkInterval)
 
 				for check := 0; check < maxChecks; check++ {
 					// 获取当前URL
 					currentURL := ""
 					if err := chromedp.Evaluate(`window.location.href`, &currentURL).Do(ctx); err != nil {
-						fmt.Printf("获取URL失败: %v\n", err)
 						continue
 					}
 
@@ -1113,59 +1113,49 @@ func captureScreenshot(url string, fullPage bool) ([]byte, error) {
 					} else {
 						stableURLCount = 0
 						previousURL = currentURL
-						urlChanged = true
 					}
 
 					time.Sleep(checkInterval)
-					totalWaitTimeUsed += checkInterval
-
-					// 检查是否即将超时
-					if remaining := timeoutDuration - totalWaitTimeUsed; remaining < 5*time.Second {
-						// 保留足够时间用于后续操作
-						break
-					}
 				}
 
 				// 特别处理：如果页面有加载动画，额外等待但不超时
-				timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 3*time.Second)
-				if err := chromedp.WaitNotPresent(`.loading-spinner`, chromedp.ByQuery, chromedp.AtLeast(0)).Do(timeoutCtx); err != nil {
-					fmt.Printf("等待加载动画消失超时，继续执行\n")
+				animationWaitTime := 2 * time.Second
+				if needsSpecialHandling {
+					animationWaitTime = 4 * time.Second // 为特殊URL增加加载动画等待时间
 				}
-				timeoutCancel()
+				time.Sleep(animationWaitTime)
 
 				// 等待JavaScript执行完成
-				timeoutCtx, timeoutCancel = context.WithTimeout(ctx, 3*time.Second)
-				if err := chromedp.Evaluate(`new Promise(resolve => setTimeout(resolve, 1000))`, nil).Do(timeoutCtx); err != nil {
-					fmt.Printf("等待JavaScript执行超时，继续执行\n")
+				jsWaitTime := 1 * time.Second
+				if needsSpecialHandling {
+					jsWaitTime = 2 * time.Second // 为特殊URL增加JavaScript等待时间
 				}
-				timeoutCancel()
-
-				if urlChanged {
-					fmt.Printf("[尝试 #%d] URL发生跳转，最终URL: %s\n", attempt, finalURL)
-				}
+				time.Sleep(jsWaitTime)
 
 				return nil
 			}),
 			// 额外的等待时间让页面完全渲染，但限制在总超时内
-			chromedp.Sleep(1*time.Second),
+			chromedp.Sleep(500*time.Millisecond), // 增加渲染等待时间
 			// 截图前滚动页面以确保内容完全加载
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				// 先滚动到页面底部以触发延迟加载的内容
-				if err := chromedp.Evaluate(`window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'})`, nil).Do(ctx); err != nil {
-					fmt.Printf("滚动到页面底部失败: %v\n", err)
+				if err := chromedp.Evaluate(`window.scrollTo({top: document.body.scrollHeight, behavior: 'auto'})`, nil).Do(ctx); err != nil {
+					// 静默忽略错误，继续执行
 				}
-				time.Sleep(500 * time.Millisecond) // 等待延迟加载内容
+				scrollWaitTime := 200 * time.Millisecond
+				if needsSpecialHandling {
+					scrollWaitTime = 500 * time.Millisecond // 为特殊URL增加滚动等待时间
+				}
+				time.Sleep(scrollWaitTime)
 				// 再滚动回顶部，确保从顶部开始截图
-				if err := chromedp.Evaluate(`window.scrollTo({top: 0, behavior: 'smooth'})`, nil).Do(ctx); err != nil {
-					fmt.Printf("滚动到页面顶部失败: %v\n", err)
+				if err := chromedp.Evaluate(`window.scrollTo({top: 0, behavior: 'auto'})`, nil).Do(ctx); err != nil {
+					// 静默忽略错误，继续执行
 				}
-				time.Sleep(500 * time.Millisecond) // 等待滚动完成
+				time.Sleep(scrollWaitTime)
 				return nil
 			}),
 			// 截图操作 - 提高质量并改进错误处理
 			chromedp.ActionFunc(func(ctx context.Context) error {
-				fmt.Printf("[尝试 #%d] 准备截图URL: %s\n", attempt, url)
-				fmt.Printf("[尝试 #%d] 文档状态: %s, 内容长度: %d字符\n", attempt, documentState, len(pageContent))
 				if fullPage {
 					return chromedp.FullScreenshot(&buf, 90).Do(ctx) // 提高质量
 				} else {
@@ -1183,9 +1173,8 @@ func captureScreenshot(url string, fullPage bool) ([]byte, error) {
 		if err == nil || len(buf) > 0 {
 			if len(buf) > 0 {
 				// 截图成功
-				fmt.Printf("[尝试 #%d] URL %s 截图成功，大小: %.2f KB\n", attempt, url, float64(len(buf))/1024.0)
 				if navigationCompleted && len(finalURL) > 0 && finalURL != url {
-					fmt.Printf("[尝试 #%d] 成功处理跳转：从 %s -> %s\n", attempt, url, finalURL)
+					fmt.Printf("成功处理跳转：从 %s -> %s\n", url, finalURL)
 				}
 				return buf, nil
 			} else {
@@ -1194,13 +1183,15 @@ func captureScreenshot(url string, fullPage bool) ([]byte, error) {
 			}
 		} else {
 			lastErr = err
-			fmt.Printf("[尝试 #%d] URL %s 截图失败: %v\n", attempt, url, err)
 		}
 
 		// 如果不是最后一次尝试，等待一段时间后再重试
 		if attempt <= maxRetries {
 			// 增加等待时间以提高重试成功率，使用递增等待策略
-			waitTime := time.Duration(attempt*2) * time.Second
+			waitTime := time.Duration(attempt*1) * time.Second
+			if needsSpecialHandling {
+				waitTime = time.Duration(attempt*2) * time.Second // 为特殊URL增加重试等待时间
+			}
 			fmt.Printf("[尝试 #%d] 等待%d秒后重试...\n", attempt, waitTime/time.Second)
 			time.Sleep(waitTime)
 		}
@@ -1225,4 +1216,124 @@ func createErrorPlaceholder(width, height int, url string) []byte {
 		width/2, (height/2)+10,
 		width/2, (height/2)+30, url)
 	return []byte(svg)
+}
+
+// needsLongerTimeout 判断URL是否需要更长的超时时间处理
+// needsLongerTimeout 判断URL是否需要更长的超时时间处理
+func needsLongerTimeout(url string) bool {
+	// 检查URL是否包含需要特殊处理的域名或特征
+	// 分类管理不同类型的域名，便于维护
+	// VPN和SSO登录页面
+	vpnDomains := []string{
+		"vpn",
+		"secvpn",
+		"sso",
+		"cas",
+		"login",
+		"auth",
+		"authentication",
+	}
+
+	// 大型门户和电商网站
+	largeSites := []string{
+		"163.com",
+		"taobao.com",
+		"tmall.com",
+		"jd.com",
+		"amazon.com",
+		"aliyun.com",
+		"baidu.com",
+		"weibo.com",
+		"youku.com",
+		"iqiyi.com",
+		"tencent.com",
+		"sohu.com",
+		"sina.com",
+		"126.com",
+		"qq.com",
+		"bilibili.com",
+	}
+
+	// 社交媒体和内容平台
+	socialMedia := []string{
+		"douban.com",
+		"zhihu.com",
+		"youtube.com",
+		"facebook.com",
+		"twitter.com",
+		"instagram.com",
+		"linkedin.com",
+		"netflix.com",
+		"spotify.com",
+		"medium.com",
+		"pinterest.com",
+		"tumblr.com",
+		"reddit.com",
+		"quora.com",
+	}
+
+	// 开发和企业工具
+	devTools := []string{
+		"microsoft.com",
+		"google.com",
+		"apple.com",
+		"github.com",
+		"stackoverflow.com",
+		"wikipedia.org",
+		"news.ycombinator.com",
+		"dropbox.com",
+		"evernote.com",
+		"slack.com",
+		"discord.com",
+		"zoom.us",
+		"meet.google.com",
+		"office.com",
+		"canva.com",
+		"adobe.com",
+		"figma.com",
+		"sketch.com",
+		"notion.so",
+		"airtable.com",
+		"clickup.com",
+		"trello.com",
+		"asana.com",
+		"jira.com",
+		"confluence.com",
+		"bitbucket.org",
+		"gitlab.com",
+	}
+
+	// 云服务和电商平台
+	cloudPlatforms := []string{
+		"docker.com",
+		"kubernetes.io",
+		"aws.amazon.com",
+		"azure.microsoft.com",
+		"gcp.google.com",
+		"alibaba.com",
+		"cloudflare.com",
+		"digitalocean.com",
+		"godaddy.com",
+		"namecheap.com",
+		"shopify.com",
+		"stripe.com",
+		"paypal.com",
+	}
+
+	// 对VPN和SSO页面进行特殊处理
+	for _, keyword := range vpnDomains {
+		if strings.Contains(strings.ToLower(url), strings.ToLower(keyword)) {
+			return true
+		}
+	}
+
+	// 其他类型的特殊域名
+	allDomains := append(append(append(largeSites, socialMedia...), devTools...), cloudPlatforms...)
+	for _, domain := range allDomains {
+		if strings.Contains(strings.ToLower(url), strings.ToLower(domain)) {
+			return true
+		}
+	}
+
+	return false
 }
